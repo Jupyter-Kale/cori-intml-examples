@@ -204,7 +204,7 @@ class ModelParamEditor(ipw.HBox):
 
 class ParamSpanWidget(ipw.VBox):
     def __init__(self, compute_func, vis_func, params, columns=None, ipp_cluster_id=None, 
-                 output_layout=None, qgrid_layout=None):
+                 output_layout=None, qgrid_layout=None, kale_manager=None):
         """
         compute_func: function 
         task to submit to IPyParallel for model output
@@ -331,7 +331,7 @@ class ParamSpanWidget(ipw.VBox):
         self.model_resource_displays = [None for i in range(self._num_models)]
         self.model_data = [
             ModelTaskData(["epoch","loss","val_loss","acc","val_acc"],["status","epoch"]) for i in range(self._num_models)]
-        self._model_controller = ModelController(ipp_cluster_id=ipp_cluster_id)
+        self._model_controller = ModelController(ipp_cluster_id=ipp_cluster_id, kale_manager=kale_manager)
 
         # select the first row by default
         self._active_plot = 0
@@ -639,7 +639,10 @@ def _get_ipp_engine_pid():
     return os.getpid()
 
 class ModelController(object):
-    def __init__(self, ipp_cluster_id=None):
+    def __init__(self, ipp_cluster_id=None, kale_manager=None):
+        if kale_manager is None or len(kale_manager) != 2:
+            raise TypeError("Missing Kale Manager details for ModelController, received {}".format(kale_manager))
+
         self._futures = []
         self._completed = []
         self._active_models = {}
@@ -656,7 +659,7 @@ class ModelController(object):
                 "model_id": -1
             }
         
-        self._kale_manager = KaleManagerClient("kale_manager")
+        self._kale_manager = KaleManagerClient(kale_manager[0], kale_manager[1])
         self._kale_workers = []
         
         for w in self._kale_manager.list_workers():
