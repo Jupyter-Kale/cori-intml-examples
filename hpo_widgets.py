@@ -1,4 +1,5 @@
 # stdlib
+import ast
 import concurrent.futures
 import copy
 import threading
@@ -191,15 +192,24 @@ class ModelParamEditor(ipw.HBox):
     def display(self, row_id, model_id, values):
         self._model_id.value = "Model {}".format(model_id)
         for k in values:
-            self._inputs[k].value = values[k]
+            if isinstance(values[k], int) or isinstance(values[k], float) or isinstance(values[k], bool):
+                self._inputs[k].value = values[k]
+            else:
+                self._inputs[k].value = str(values[k])
 
     def toggle_disabled(self):
         self._model_id.disabled = not self._model_id.disabled
         for k in self._inputs:
             self._inputs[k].disabled = not self._inputs[k].disabled
-            
+
     def get_values(self):
-        return {k: self._inputs[k].value for k in self._inputs}
+        vals = {}
+        for k in self._inputs:
+            if self._params[k]["type"] == list:
+                vals[k] = ast.literal_eval(self._inputs[k].value)
+            else:
+                vals[k] = self._inputs[k].value
+        return vals
 
 
 class ParamSpanWidget(ipw.VBox):
@@ -415,18 +425,16 @@ class ParamSpanWidget(ipw.VBox):
                             
                             if self._active_plot == model_id:
                                 self.display_selected({'old': [model_id], 'new': [model_id]}, self.param_table, refresh=True)
-                        
-                        self.update_resources(model_id)
+                        else:
+                            self.update_resources(model_id)
                 time.sleep(interval)
         except Exception as e:
             self.debug.append_stdout("Exception while applying updates from futures: {}\n".format(
                 traceback.format_exception(etype=e.__class__, value=e, tb=e.__traceback__)))
-    
+
     def update_row(self, model_id, data):
         try:
-            self.debug.append_stdout("update_row - model: {}, data:{}\n".format(model_id, data))
             row_id = self.param_table.get_changed_df().index[model_id]
-
             for k in data:
                 self.param_table._handle_qgrid_msg_helper({
                     'type': 'cell_change',
@@ -538,7 +546,14 @@ class ParamSpanWidget(ipw.VBox):
             model_id = None
             try:
                 model_id = fut.result()
-                self.update_row(model_id, {"status": "Stopped"})
+
+                status = ""
+                while status not in ["Stopped", "Ended Training"]:
+                    self.update_row(model_id, {"status": "Stopped"})
+                    table_data = self.param_table.get_changed_df()
+                    row_id = table_data.index[model_id]
+                    status = table_data.loc[row_id, "status"]
+
                 self._display_controls(model_id)
             except Exception as e:
                 if model_id is not None:
@@ -581,29 +596,36 @@ class ParamSpanWidget(ipw.VBox):
             for row_id in srows:
                 model_id = table_data.index[row_id]
                 self.model_data[model_id] = ModelTaskData(["epoch","loss","val_loss","acc","val_acc"],["status","epoch"])
-                edited_values = self._edit_selected_rows.get_values()
-                edited_values.update({
+                edited_params = self._edit_selected_rows.get_values()
+                edited_display_values = {
                     "status": "Starting",
                     "epoch": -1,
                     "loss": np.nan,
                     "val_loss": np.nan,
                     "acc": np.nan,
                     "val_acc": np.nan
-                })
-                self.update_row(model_id, edited_values)
-                time.sleep(0.1)
-                params = table_data.loc[row_id, param_keys].to_dict()
-                self.debug.append_stdout("Starting new model {} with params {}".format(model_id, params))
+                }
+
+                for k in edited_params:
+                    if isinstance(edited_params[k], list):
+                        edited_display_values[k] = str(edited_params[k])
+                    else:
+                        edited_display_values[k] = edited_params[k]
+
+                self.update_row(model_id, edited_display_values)
+
+                self.debug.append_stdout("Starting new model {} with params {}".format(model_id, edited_params))
                 self.debug.append_stdout("Resetting model plot")
+
                 self.model_displays[model_id] = None
-                self.model_plots[model_id] = self.vis_func(title="Model {}: {}".format(model_id, params))
+                self.model_plots[model_id] = self.vis_func(title="Model {}: {}".format(model_id, edited_params))
                 plot_data = self.model_data[model_id].get_plot_data()
                 self.model_plots[model_id].update(plot_data)
 
                 self._model_controller.start_model(
                     model_id,
                     self.compute_func,
-                    params
+                    edited_params
                 )
                 
                 if self._active_plot == model_id:
@@ -693,8 +715,9 @@ class ModelController(object):
         engine_pid = self._ipp_engines[self._model_id_to_ipp_engine[model_id]]["pid"]
         
         for w in self._kale_workers:
+            _tasks = w.get_tasks()
             #print(w.get_tasks()['1']["pid"], engine_pid, w.get_tasks()['1']["pid"] == engine_pid)
-            if w.get_tasks()['1']["pid"] == engine_pid:
+            if '1' in _tasks and _tasks['1']["pid"] == engine_pid:
                 return w
         else:
             return None
@@ -804,6 +827,7 @@ class ModelController(object):
     def set_model_completed(self, model_id):
         if model_id not in self._completed:
             self._completed.append(model_id)
+        self._ipp_engines[self._model_id_to_ipp_engine[model_id]]["busy"] = False
     
     def get_completed_models(self):
         return {k: self._futures[self._completed_models[k]] for k in self._completed_models}
